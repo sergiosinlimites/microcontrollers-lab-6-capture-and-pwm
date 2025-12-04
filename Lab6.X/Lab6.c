@@ -1,18 +1,19 @@
 #include <xc.h>
 #include <stdio.h>
-#define _XTAL_FREQ 1000000 //Definir la constante para el cálculo de retardos   
-#include "LibLCDXC8_1.h" //Incluir libreria propia
+#include <stdlib.h> // Necesario para funciones estandar
+#define _XTAL_FREQ 1000000 //Definir la constante para el cÃ¡lculo de retardos   
+#include "LibLCDXC8.h" //Incluir libreria propia
 #pragma config FOSC=INTOSC_EC //Configurar el reloj interno
 #pragma config WDT=OFF //Desactivar el perro guardian
 #pragma config LVP=OFF //Programar el PIC
 
-//DECLARACIÓN DE VARIABLES 
+//DECLARACIÃ“N DE VARIABLES 
 unsigned char Corazon[8] = {
-    0b01010,  //  * * 
+    0b01010,  //  * *
     0b11111,  // *****
     0b11111,  // *****
     0b11111,  // *****
-    0b01110,  //  *** 
+    0b01110,  //  ***
     0b00100,  //   *  
     0b00000,  //      
     0b00000
@@ -26,12 +27,13 @@ unsigned char RayaAlPiso[]={
     0b00000,
     0b00000,
     0b00000,
-    0b11111}; // Carácter nuevo
+    0b11111
+}; // CarÃ¡cter nuevo
 
 unsigned int Supercontador; //Contador global de las piezas
 unsigned int contador; //Contador unidades (siete segmentos)
 unsigned int contadorRGB; //Contador decenas (led rgb)
-unsigned char posicion; // Posicion del número ingresado por el usuario (unidades o decenas)
+unsigned char posicion; // Posicion del nÃºmero ingresado por el usuario (unidades o decenas)
 unsigned char editor; // Variable para habilitar la escritura en el lcd del usuario 
 unsigned int Objetivo; // Valor meta de las piezas a contar 
 unsigned char salir; // Variable para salir del ciclo de conteo
@@ -41,7 +43,14 @@ unsigned char Inactividad; //Variable para inactividad
 unsigned int valorADC; // Variable que guarda el valor dado por el modulo ADC
 unsigned char datoSerial;
 
-//DECLARACIÓN DE FUNCIONES 
+volatile unsigned char flag_imprimir = 0; 
+unsigned int tiempo_eco;    // DuraciÃ³n del pulso Echo
+float distancia;            // Distancia calculada
+unsigned char pwm_duty_perc; // Porcentaje de PWM
+unsigned char control_manual_pwm = 0; // Bandera para control serial (Bonus 1)
+unsigned char conteo_recuperado = 0;  // Variable temporal EEPROM (Bonus 2)
+
+//DECLARACIÃ“N DE FUNCIONES 
 void __interrupt()ISR(void);
 void ConfigVariables(void);
 void Bienvenida(void);
@@ -51,6 +60,12 @@ void Borrar(void);
 unsigned int Conversion(unsigned char);
 void putch(char);
 
+void ConfigurarPWM(void);
+void ConfigurarCaptura(void);
+void TriggerUltrasonido(void);
+void GuardarEEPROM(unsigned int direccion, unsigned char dato);
+unsigned char LeerEEPROM(unsigned int direccion);
+
 
 void main (void){
 
@@ -59,12 +74,12 @@ void main (void){
     editor=0;
     datoSerial=0;
 
-    // CONFIGURACIÓN DE LOS PUERTOS
+    // CONFIGURACIÃ“N DE LOS PUERTOS
     ADCON1=0b001110; //Quital las funciones analogas de los pines RA1-RA4, RB0-RB4 , RE0-RE2  
-                     // solo el pin A0 es analógico
+                     // solo el pin A0 es analÃ³gico
 
-    // CONFIGURACIÓN MÓDULO ADC
-    ADCON0=0b00000001; // Se selecciona el canal 0 y se enciende el módulo
+    // CONFIGURACIÃ“N MÃ“DULO ADC
+    ADCON0=0b00000001; // Se selecciona el canal 0 y se enciende el mÃ³dulo
     ADCON2=0b10001000; // Se justifica hacia la derecha y se toma un preescaler de 2 
 
 
@@ -76,7 +91,7 @@ void main (void){
     TRISD=0; // Todos los pines del puerto E son salidas digitales
     LATD=contador; // El puerto es igual a el valor del contador 
 
-    // Pin del led de operación
+    // Pin del led de operaciÃ³n
     TRISA1=0; // Pin A1 es configurado como salida digital
     LATA1=0; // La salida del Pin A1 es 0
 
@@ -88,16 +103,21 @@ void main (void){
     LATA3=0;
     TRISA4=0; //E
 
-
     // Pin para la salida del motor
-    TRISC2=0;
+    TRISC2=0; // RC2 como salida para PWM
     LATC2=0;
+    
+    // Pines Sensor Ultrasonido
+    TRISC0=0; // RC0 como SALIDA para TRIGGER
+    LATC0=0;
+    TRISC1=1; // RC1 (CCP2) como ENTRADA para ECHO
 
-    //Pines transmisión serial
+    //Pines transmisiÃ³n serial
     TRISC6=0; //Tx
     TRISC7=1; //Rx
+    
     TXSTA=0b00100100;//Configurar la transimision / modo asincronico-8 bits/
-    //  CSRC =0; Modo maestro/esclavo(Solo para modo sincrono); 1=Modo maestro(señal de reloj interno); 0=Modo esclavo(señal de reloj externo)
+        //  CSRC =0; Modo maestro/esclavo(Solo para modo sincrono); 1=Modo maestro(se al de reloj interno); 0=Modo esclavo(se al de reloj externo)
     //  TX9 =0; Sleccion modo 8/9 bits en la transmision; 1=Modo 9 bits en la transmision; 0=Modo 8 bits en la transmision
     //  TXEN=1; Habilitador de Transmisor; 1= Habilitado; 0 = deshabilitado
     //  SYNC=0; Seleccion del modo de trabajo USART; 1 = Modo Sincrono; 0 = Modo asincrono.
@@ -106,7 +126,7 @@ void main (void){
     //  TRMT=0; Estado del registro de transmision TXREG; 1=Registro TXREG vacio; 0=Registro TXREG ocupado
     //
     RCSTA = 0b10010000; // Serial Port Enable 
-    //  SPEN =1; Habilitador del puerto serie; 1=Puerto serie activado; 0=Desactivado
+        //  SPEN =1; Habilitador del puerto serie; 1=Puerto serie activado; 0=Desactivado
     //  RX9 =0; Sleccion modo 8/9 bits en la recepcion; 1=Modo 9 bits; 0=Modo 8 bits
     //  SREN=0; Habilitador de recepcion simple(SOLO EN MODO SINCRONO MAESTRO); 1= Habilitado; 0 = deshabilitado
     //  CREN=1; Habilitacion del receptor; 1 = Recepcion Habilitada; 0 = Recepcion deshabilitada
@@ -114,9 +134,8 @@ void main (void){
     //  FERR=0; Bit de error en el formato del byte recibidio; 1=Se ha producido error en el formato; 0=No se ha producido error en el formato
     //  OERR=0; Bit de error de sobre escritura; 1=Se ha producido error de sobre escritura; 0=No Se ha producido error de sobre escritura
     //  RX9D=0; 9vo bit de Dtos de recepcion(CUANDO SE OPERAN TRAMAS SERIALES DE 9 BITS DE DATOS)
-
     BAUDCON=0b00001000;//Velocidad de transimsion 9600
-    //  ADBOVF =0; Bit de desbordamiento de Auto-detecciond del baud rate; 1=Se ha producido un auto-desbordamiento; 0=No
+        //  ADBOVF =0; Bit de desbordamiento de Auto-detecciond del baud rate; 1=Se ha producido un auto-desbordamiento; 0=No
     //  RCIDL =0; Estado de la operacion de la recepcion; 1=No hay operacion de recepcion en marcha; 0=Si hay operacion de recepion en marcha
     //  --
     //  SCKP=0; Seleccion de polaridad del reloj(Solo en modo sincrono); 1 = Flanco de subida; 0 = Flanco de bajada
@@ -138,63 +157,112 @@ void main (void){
     TRISA5=0; // Pin A1 es configurado como salida digital
     LATA5=1; // La salida del Pin A5 es 0 (backlight prendido)  
 
-    // CONFIGURACIÓN DE LAS INTERRUPCIONES //
+    ConfigurarPWM();        // Configura Motor
+    ConfigurarCaptura();    // Configura Sensor
 
-    // Configuración de la interrupción del TIMER0
-    T0CON=0b00000001; //Configuración del timer0 modo 16 bits - prescale 4
-    TMR0=3036; // Valor de precarga
+    // CONFIGURACIÃ“N DE LAS INTERRUPCIONES //
+
+    // ConfiguraciÃ³n de la interrupciÃ³n del TIMER0
+    T0CON=0b00000001; //ConfiguraciÃ³n del timer0 modo 16 bits - prescale 4
+    TMR0=3036; // Valor de precarga (aprox 1 seg)
     TMR0IF=0; // Bandera inicializada en 0
-    TMR0IE=1; // Habilitación local de la interrupción 
+    TMR0IE=1; // HabilitaciÃ³n local de la interrupciÃ³n 
     TMR0ON=1; // Encender el Timer0
 
-    // Configuración de la interrupción del TIMER1  
+    // ConfiguraciÃ³n de la interrupciÃ³n del TIMER1  
     T1CON = 0b10110001;               // RD16, 1:8, interno, ON [web:16]
     TMR1=3036;
     TMR1IF=0; // Limpiar bandera de Timer1?
     TMR1IE=1; // Habilitacion local de la interrupcion de Timer1?
     TMR1ON = 1;
 
-    //Configuración iterrupción teclado (pueto B)
+    //ConfiguraciÃ³n iterrupciÃ³n teclado (pueto B)
     TRISB=0b11110000; // Configura de RB0 a RB3 como salidas y de RB4 a RB7 como entradas
     LATB=0b00000000;// Salidas del puerto B = 0
     RBPU=0; //Activa resistencias de pull-up para el puerto B
     __delay_ms(100); //Delay mientras se polarizan las entradas
     RBIF=0; // Bandera a cero
-    RBIE=1; // Activación de la interrupción de teclado
+    RBIE=1; // ActivaciÃ³n de la interrupciÃ³n de teclado
 
     PEIE=1; // Habilitar interrupciones de perifericos
-    GIE=1;  //Habilitación global de las interrupciones
+    GIE=1;  //HabilitaciÃ³n global de las interrupciones
     RCIE=1;
 
     //////////////////////////////////////////////////////////////////////////
     LATA3=1;
-    Bienvenida(); //Mensaje de Bienvenida en el LCD
-
-            //Detectar fuente de Reset POR
+    // MODIFICADO GUIA 6 (Bonus 2): RecuperaciÃ³n de EEPROM al inicio
+    // Detectar fuente de Reset POR y preguntar por recuperaciÃ³n
     if(POR==0){
         POR=1;
-        BorraLCD(); 
-        OcultarCursor();
-        MensajeLCD_Var("    FALLA DE");
-        DireccionaLCD(0xC0);
-        MensajeLCD_Var("     ENERGIA");
+        conteo_recuperado = LeerEEPROM(0); // Leemos la direcciÃ³n 0
+        
+        // Si hay un dato vÃ¡lido (mayor a 0 y menor a 60), preguntamos
+        if(conteo_recuperado > 0 && conteo_recuperado < 60){
+            Bienvenida();
+            BorraLCD();
+            MensajeLCD_Var("Recuperar conteo?");
+            DireccionaLCD(0xC0);
+            MensajeLCD_Var("1:Si  2:No");
+            
+            Tecla = '\0';
+            while(Tecla != 1 && Tecla != 2); // Esperar respuesta del teclado (1 o 2)
+            
+            if(Tecla == 1){
+                // Restaurar
+                Supercontador = conteo_recuperado;
+                contadorRGB = Supercontador / 10;
+                contador = Supercontador % 10;
+                // Actualizar visualizaciÃ³n
+                LATD = contador;
+                // LÃ³gica rÃ¡pida para restaurar color
+                if(contadorRGB==0) LATE=0b00000010; 
+                else if(contadorRGB==1) LATE=0b00000011; 
+                else if(contadorRGB==2) LATE=0b00000001; 
+                else if(contadorRGB==3) LATE=0b00000101; 
+                else if(contadorRGB==4) LATE=0b00000100; 
+                else if(contadorRGB==5) LATE=0b00000000;
+            } else {
+                Supercontador = 0;
+                GuardarEEPROM(0, 0); // Borrar memoria
+            }
+        } else {
+            // Comportamiento original si no hay dato vÃ¡lido
+            Bienvenida(); 
+            BorraLCD(); OcultarCursor();
+            MensajeLCD_Var("    FALLA DE");
+            DireccionaLCD(0xC0);
+            MensajeLCD_Var("     ENERGIA");
+            __delay_ms(1000);
+        }
 
     }else{
+        Bienvenida(); 
         BorraLCD(); 
         OcultarCursor();
         MensajeLCD_Var("    RESET DE");
         DireccionaLCD(0xC0);
         MensajeLCD_Var("     USUARIO");
+        __delay_ms(1000);
     }
-
-    __delay_ms(1000);
 
     LATA3=0;
 
     while(1){
-        PreguntaAlUsuario();
+
+        
+        if(flag_imprimir == 1){
+            flag_imprimir = 0; // Bajamos la bandera
+            
+            // AquÃ­ sÃ­ podemos tomarnos el tiempo de enviar datos
+            printf("\r\nValor de PWM: %d %%", pwm_duty_perc);
+            // Imprimimos como entero para evitar basura flotante en algunas versiones de printf
+            printf("\r\nDistancia objeto: %d cm", (int)distancia);
+        }
+        
+        if(Supercontador == 0) PreguntaAlUsuario(); // Solo preguntar si no se restaurÃ³ o es 0
         OcultarCursor();
         //Mensaje en pantalla
+        BorraLCD(); // Asegurar limpieza
         MensajeLCD_Var("Faltantes: ");
         EscribeLCD_n8(Objetivo-Supercontador,2);
         DireccionaLCD(0xC0);    
@@ -216,21 +284,28 @@ void main (void){
                 MensajeLCD_Var("   Presione OK");
                 //
                 salir = 0; //Se hace la salida 0 para que se salga del ciclo de conteo
+                
+                GuardarEEPROM(0, 0); // Limpiar EEPROM al terminar
+                
                 Tecla='\0'; //valor vacio
                 while(Tecla!= '*'){} // Espera de pulso ok
                 ConfigVariables(); // Configuracion a valores iniciales
 
             }
-            if(RC1==0&&Supercontador!=Objetivo){                                // Verifica si el interruptor está pulsado
-                Inactividad=0;                                                  // Si esta contnado no quiero que entre en sleep
-                Pulsado=0;  
-            }
-
-            if(Pulsado==0){
-                if(RC1==1){
+            
+            // MODIFICADO GUIA 6: LÃ³gica de sensor ultrasÃ³nico
+            // Se usa la variable 'distancia' calculada en interrupciÃ³n CCP2
+            // Rango de detecciÃ³n segÃºn guÃ­a: 5 a 8 cm
+            
+            if(distancia >= 5.0 && distancia <= 8.0){
+                Inactividad=0;
+                if(Pulsado==0){ // Flanco de entrada
                     Pulsado=1;
                     contador++; // Aumenta contador
                     Supercontador++; // Aumenta Supercontador
+                    
+                    GuardarEEPROM(0, (unsigned char)Supercontador);
+
                     if (contador==10){ // Unidades
 
                         LATA2=1;
@@ -267,7 +342,12 @@ void main (void){
                     EscribeLCD_n8(Objetivo-Supercontador,2);
                     //
                     LATD=contador; // Salida del siete segmentos 
-                    __delay_ms(500);  // delay pa' el pulsador   
+                    __delay_ms(500);  // delay para evitar rebote o conteo mÃºltiple   
+                }
+            } else {
+                // Objeto saliÃ³ del rango o estÃ¡ lejos/muy cerca, permitir contar de nuevo
+                if(distancia > 10.0 || distancia < 3.0) {
+                    Pulsado = 0;
                 }
             }   
         }
@@ -277,11 +357,101 @@ void main (void){
     }
 }
 
+void ConfigurarPWM(void){
+    // Configura Timer2 y CCP1 para PWM (Motor)
+    // Frecuencia aprox 1kHz con 1MHz Fosc
+    // Periodo PWM = [(PR2) + 1] * 4 * TOSC * (TMR2 Prescale Value=1)
+    PR2 = 249; 
+    CCP1CON = 0b00001100; // Modo PWM
+    // 7-6: If CCP1M3:CCP1M2 = 11: 00 = Single output: P1A modulated; P1B, P1C, P1D assigned as port pins
+    // 5-4: These bits are the two LSbs of the 10-bit PWM duty cycle. The eight MSbs of the duty cycle are found in CCPR1L.
+    // 3-0: 1100 = PWM mode: P1A, P1C active-high; P1B, P1D active-high
+    T2CON = 0b00000100;   // Timer2 ON
+    // 7: unimplemented
+    // 6-3: 0000 = 1:1 postscale
+    // 2: timer2 ON
+    // 1-0: 00 = Prescaler is 1
+
+}
+
+void ConfigurarCaptura(void){
+    // Configura Timer3 y CCP2 para Captura (Sensor HC-SR04)
+    T3CON = 0b10001001;
+    // 7: RD16 = 1 Enables register read/write of Timer3 in one 16-bit operation
+    // 6,3: T3CCP2:T3CCP1 = 0,1 Timer3 is the capture/compare clock source for CCP2;
+    // 5-4: T3CKPS1:T3CKPS0 = 00 Prescaler 1:1
+    // 2: ignorar
+    // 1: 0 = Internal clock (FOSC/4)
+    // 0: 1 = Enable Timer3
+    CCP2CON = 0b00000101; // Modo Captura, flanco subida (Rising Edge)
+    // 7-6: 00: Unimplemented
+    // 5-4: 00 unused para captura
+    // 3-0: 0101 = Capture mode, every rising edge
+    CCP2IE = 1; // Habilitar interrupciÃ³n CCP2, cuando llegue un dato del sensor
+    CCP2IF = 0; // Bandera en 0
+}
+
+void TriggerUltrasonido(void){
+    // Genera pulso de 10us en RC0
+    LATC0 = 1;
+    __delay_us(10);
+    LATC0 = 0;
+}
+
+// Funciones para EEPROM
+void GuardarEEPROM(unsigned int direccion, unsigned char dato){
+    // WRERR es cero cuando termina la operaciÃ³n de escritura, 1 mientras escribe
+    
+    EEADR = direccion;
+    EEDATA = dato;
+    EECON1 = 0b0010;
+    // 7: 0 = Access data EEPROM memory
+    // 6: 0 = Access Flash program or data EEPROM memory
+    // 5: 0 = Unimplemented
+    // 4: 0 = Perform write-only
+    // 3: 0 = The write operation completed. Nota: When a WRERR occurs, the EEPGD and CFGS bits are not cleared. This allows tracing of the error condition.
+    // 2: 1 = Habilitar escritura
+    // 1: Read only
+    // 1 = Initiates a data EEPROM erase/write cycle or a program memory erase cycle or write cycle (The operation is self-timed and the bit is cleared by hardware once write is complete. The WR bit can only be set (not cleared) in software.)
+    // 0 = Write cycle to the EEPROM is complete
+    // 0: Read control bit
+    // 1 = Initiates an EEPROM read (Read takes one cycle. RD is cleared in hardware. The RD bit can only be set (not cleared) in software. RD bit cannot be set when EEPGD = 1 or CFGS = 1.) 
+    // 0 = Does not initiate an EEPROM read
+    //EEPGD = 0; // Acceso a memoria de datos
+    //EECON1bits.CFGS = 0;
+    GIE = 0;   // Deshabilitar interrupciones
+    EECON2 = 0x55; // Secuencia obligatoria
+    EECON2 = 0xAA;
+    EECON1bits.WR = 1;    // Iniciar escritura
+    while(EECON1bits.WR); // Esperar a que termine, aprox 2ms
+    GIE = 1;   // Habilitar interrupciones de nuevo
+    EECON1bits.WREN = 0;  // Deshabilitar escritura
+}
+
+unsigned char LeerEEPROM(unsigned int direccion){
+    EEADR = direccion;
+    EECON1bits.EEPGD = 0; // 0=Acceso a memoria de datos
+    EECON1bits.CFGS = 0; // 0=Acceso a memoria EEPROM, 1=Acceso a Registros de ConfiguraciÃ³n
+    EECON1bits.RD = 1;    // Iniciar lectura
+    return EEDATA;
+}
+
 void __interrupt()ISR(void){
 
     if (RCIF==1){
         datoSerial = RCREG; 
-        if(datoSerial==80 || datoSerial==112){
+        
+        // Control de velocidad manual (Bonus 1)
+        if(datoSerial == 'Z' || datoSerial == 'z'){ control_manual_pwm = 1; pwm_duty_perc = 0; }
+        else if(datoSerial == 'X' || datoSerial == 'x'){ control_manual_pwm = 1; pwm_duty_perc = 20; }
+        else if(datoSerial == 'C' || datoSerial == 'c'){ control_manual_pwm = 1; pwm_duty_perc = 40; }
+        else if(datoSerial == 'V' || datoSerial == 'v'){ control_manual_pwm = 1; pwm_duty_perc = 60; }
+        else if(datoSerial == 'B' || datoSerial == 'b'){ control_manual_pwm = 1; pwm_duty_perc = 80; }
+        else if(datoSerial == 'N' || datoSerial == 'n'){ control_manual_pwm = 1; pwm_duty_perc = 100; }
+        else if(datoSerial == 'M' || datoSerial == 'm'){ control_manual_pwm = 0; } // Volver a control pot (opcional)
+
+        // Comandos originales
+        if(datoSerial==80 || datoSerial==112){ // P
             LATE=0b00000110; //Led en rojo
             //Mensaje en pantalla
             BorraLCD(); 
@@ -289,9 +459,10 @@ void __interrupt()ISR(void){
             MensajeLCD_Var("   PARADA DE");
             DireccionaLCD(0xC0);
             MensajeLCD_Var("   EMERGENCIA");
+            CCP1CON = 0; // Apagar Motor PWM
             //
             while(1){} // Bucle
-        }else if(salir==1 && (datoSerial==114 || datoSerial==82)){
+        }else if(salir==1 && (datoSerial==114 || datoSerial==82)){ // R
             contador=0;
             Supercontador = 0;
             contadorRGB = 0;
@@ -299,33 +470,50 @@ void __interrupt()ISR(void){
             DireccionaLCD(0x8B);
             EscribeLCD_n8(Objetivo-Supercontador,2); //Mensaje pantalla
             LATD=contador; //Salida del siete segmentos
-
+            GuardarEEPROM(0,0); // Reiniciar el conteo y guardar en EEPROM
         }
-
     }
 
-    if(TMR0IF==1){ // Led de operación  
+    // InterrupciÃ³n Sensor HC-SR04
+    if(CCP2IF){
+        if(CCP2M0 == 1){ // Si estaba en flanco subida (Inicio Eco)
+            // Reiniciar Timer3
+            TMR3H = 0;
+            TMR3L = 0;
+            CCP2CON = 0b00000100; // Cambiar a flanco bajada (0100)
+        } else { // Si detectÃ³ flanco bajada (Fin Eco)
+            tiempo_eco = TMR3; // Leer valor 16 bits
+            CCP2CON = 0b00000101; // Volver a esperar subida
+            // Calculo: (tiempo_us / 58) = cm. Timer3 a 1MHz -> 1 tick = 1us
+            distancia = (float)tiempo_eco / 58.0;
+        }
+        CCP2IF = 0; // Limpiar bandera
+    }
+
+    if(TMR0IF==1){ // Led de operaciÃ³n y lectura ADC/Serial
         TMR0=3036; //Valor de precarga
         TMR0IF=0; //Bandera en 0
         LATA1=LATA1^1; // Prende o apaga el led 
-        valorADC=Conversion(0); // Se consuta el valor del conversor
-        printf("Valor del ADC:%d\r\n", valorADC); // Se envia de manera serial
-//            printf("Valor del ADC:%d\r\n", datoSerial); // Se envia de manera serial
-//            printf("Valor del ADC:%d\r\n", LATC2); // Se envia de manera serial
-        if(valorADC>=511){ //Lógica de encendido y apagado del motor; Prende con E o e
-            if(datoSerial!=65 && datoSerial!=97){
-                LATC2=1;
-            }else if(datoSerial==65 || datoSerial==97){
-                LATC2=0;
-            } 
+        
+        TriggerUltrasonido();
 
-        }else if(valorADC < 511){  //Apagar Motor con A o a
-                    if(datoSerial!=69 && datoSerial!=101){
-                        LATC2=0;
-            }else if(datoSerial==69 || datoSerial==101){  //Prende con E o e
-                LATC2=1; 
-            }
-        }   
+        // LÃ³gica PWM Motor y Serial
+        if(control_manual_pwm == 0){
+            valorADC=Conversion(0); 
+            // Convertir 10-bit ADC a 10-bit PWM Duty (CCPR1L + DC1B)
+            CCPR1L = valorADC >> 2; 
+            DC1B1 = (valorADC & 2) >> 1;
+            DC1B0 = valorADC & 1;
+            // Calcular porcentaje para mostrar
+            pwm_duty_perc = (unsigned char)((valorADC * 100UL) / 1023UL);
+        } else {
+            // Modo Manual por Serial
+            unsigned int val_reg = (pwm_duty_perc * 1023UL) / 100UL;
+            CCPR1L = val_reg >> 2;
+            DC1B1 = (val_reg & 2) >> 1;
+            DC1B0 = val_reg & 1;
+        }
+        flag_imprimir = 1;
     }
 
     if (TMR1IF){
@@ -340,13 +528,15 @@ void __interrupt()ISR(void){
             LATA3 = 0;
         }
 
-        // Entrar en suspensión a los 20 s
+        // Entrar en suspensiÃ³n a los 20 s
         if(Inactividad >= 20){
+            CCP1CON = 0; // Apagar PWM antes de dormir
             Sleep();    // suspender PIC
 
-            // ---- DESPERTÓ AQUI ----
+            // ---- DESPERTÃ“ AQUI ----
+            ConfigurarPWM(); // Restaurar PWM al despertar
             Inactividad = 0;             // reiniciar inactividad
-            RBIF = 0;                    // limpiar interrupción por teclado
+            RBIF = 0;                    // limpiar interrupciÃ³n por teclado
             TMR1ON = 1;                  // volver a encender Timer1
         }
     }
@@ -398,6 +588,7 @@ void __interrupt()ISR(void){
                     MensajeLCD_Var("   PARADA DE");
                     DireccionaLCD(0xC0);
                     MensajeLCD_Var("   EMERGENCIA");
+                    CCP1CON = 0; // Apagar motor PWM
                     //
                     while(1){} // Bucle
                 }   
@@ -434,6 +625,7 @@ void __interrupt()ISR(void){
                         DireccionaLCD(0x8B);
                         EscribeLCD_n8(Objetivo-Supercontador,2); //Mensaje pantalla
                         LATD=contador; //Salida del siete segmentos
+                        GuardarEEPROM(0,0);
                     }
                 }
                 else if(RB5==0) {                                               //0
@@ -467,7 +659,7 @@ void __interrupt()ISR(void){
             }
             }
             }
-            LATB=0b11110000; // configuración default
+            LATB=0b11110000; // configuraciÃ³n default
         }
         __delay_ms(300); // delay pa' el pulsador 
         RBIF=0; // Bandera en 0
@@ -484,12 +676,12 @@ void ConfigVariables(void){ //Valores iniciales de la variables
     Tecla='\0'; 
 }
 void Bienvenida(void){
-    // CONFIGURACIÓN DEL LCD
+    // CONFIGURACIÃ“N DEL LCD
     ConfiguraLCD(4); //Modo de bits  
-    InicializaLCD(); //Inicialización de la pantalla
+    InicializaLCD(); //InicializaciÃ³n de la pantalla
     OcultarCursor();
 
-    //CREACIÓN DE CARACTERES PROPIOS
+    //CREACIÃ“N DE CARACTERES PROPIOS
     CrearCaracter(Corazon, 0);
 
     //Mensaje en pantalla
@@ -576,7 +768,7 @@ void Borrar(){ //Borrar el valor escrito por el usuario
 unsigned int Conversion(unsigned char canal){ 
     ADCON0=(canal<<2);
     ADON=1;      //Se habilita el modulo ADC
-    GO_DONE=1;   //Se inicia la conversión
+    GO_DONE=1;   //Se inicia la conversiÃ³n
     while(GO_DONE==1);
     return ADRES;
 }
