@@ -5730,79 +5730,6 @@ extern int vsscanf(const char *, const char *, va_list) __attribute__((unsupport
 extern int sprintf(char *, const char *, ...);
 extern int printf(const char *, ...);
 
-# 7 "C:\Program Files\Microchip\xc8\v2.50\pic\include\c90\stdlib.h"
-typedef unsigned short wchar_t;
-
-# 15
-typedef struct {
-int rem;
-int quot;
-} div_t;
-typedef struct {
-unsigned rem;
-unsigned quot;
-} udiv_t;
-typedef struct {
-long quot;
-long rem;
-} ldiv_t;
-typedef struct {
-unsigned long quot;
-unsigned long rem;
-} uldiv_t;
-
-# 65
-extern double atof(const char *);
-extern double strtod(const char *, const char **);
-extern int atoi(const char *);
-extern unsigned xtoi(const char *) __attribute__((__deprecated__));
-extern long atol(const char *);
-
-# 73
-extern long strtol(const char *, char **, int);
-
-extern int rand(void);
-extern void srand(unsigned int);
-extern void * calloc(size_t, size_t);
-extern div_t div(int numer, int denom);
-extern udiv_t udiv(unsigned numer, unsigned denom) __attribute__((__deprecated__));
-extern ldiv_t ldiv(long numer, long denom);
-extern uldiv_t uldiv(unsigned long numer,unsigned long denom) __attribute__((__deprecated__));
-
-# 85
-extern unsigned long _lrotl(unsigned long value, unsigned int shift);
-extern unsigned long _lrotr(unsigned long value, unsigned int shift);
-extern unsigned int _rotl(unsigned int value, unsigned int shift);
-extern unsigned int _rotr(unsigned int value, unsigned int shift);
-
-
-
-
-extern void * malloc(size_t);
-extern void free(void *);
-extern void * realloc(void *, size_t);
-
-# 104
-extern int atexit(void (*)(void));
-extern char * getenv(const char *);
-extern char ** environ;
-extern int system(char *);
-extern void qsort(void *, size_t, size_t, int (*)(const void *, const void *));
-extern void * bsearch(const void *, void *, size_t, size_t, int(*)(const void *, const void *));
-extern int abs(int);
-extern long labs(long);
-
-extern char * itoa(char * buf, int val, int base) __attribute__((__deprecated__));
-extern char * utoa(char * buf, unsigned val, int base) __attribute__((__deprecated__));
-
-
-
-
-extern char * ltoa(char * buf, long val, int base) __attribute__((__deprecated__));
-extern char * ultoa(char * buf, unsigned long val, int base);
-
-extern char * ftoa(float f, int * status) __attribute__((__deprecated__));
-
 # 33 "LibLCDXC8.h"
 unsigned char interfaz=8;
 
@@ -6098,20 +6025,22 @@ ComandoLCD(0xF);
 
 
 # 6 "Lab6.c"
-#pragma config FOSC=INTOSC_EC
+#pragma config FOSC=INTOSCIO_EC
 #pragma config WDT=OFF
 #pragma config LVP=OFF
 
 
-unsigned char Corazon[8] = {
-0b01010,
+
+
+unsigned char Estrella[8] = {
+0b00100,
+0b01110,
 0b11111,
-0b11111,
+0b01110,
 0b11111,
 0b01110,
 0b00100,
-0b00000,
-0b00000
+0b00000   
 };
 
 unsigned char RayaAlPiso[]={
@@ -6136,18 +6065,20 @@ unsigned char Tecla;
 unsigned char Pulsado;
 unsigned char Inactividad;
 unsigned int valorADC;
+unsigned int valorADC2;
 unsigned char datoSerial;
+unsigned char d;
+unsigned char etimeout=0,ctimeout=0;
+unsigned char porcentajeADC;
+unsigned int anchoPulso=0;
+unsigned int valorGuardado=0;
+unsigned int objetivoGuardado=0;
+
+unsigned char modoReversa = 0;
 
 
-volatile unsigned char flag_timer0_event = 0;
-volatile unsigned char flag_imprimir = 0;
-
-unsigned int tiempo_eco;
-int distancia;
-unsigned char pwm_duty_perc;
 unsigned char control_manual_pwm = 0;
-unsigned char conteo_recuperado = 0;
-
+unsigned char pwm_duty_perc = 0;
 
 void __interrupt()ISR(void);
 void ConfigVariables(void);
@@ -6157,16 +6088,35 @@ void ConfigPregunta(void);
 void Borrar(void);
 unsigned int Conversion(unsigned char);
 void putch(char);
+unsigned char MedirDistancia(void);
+unsigned char EEPROM_Read(unsigned char);
+void EEPROM_Write(unsigned char, unsigned char);
+void GuardarContador(unsigned int, unsigned int);
+unsigned int LeerObjetivo(void);
+unsigned int LeerContador(void);
 
-void ConfigurarPWM(void);
-void ConfigurarCaptura(void);
-void TriggerUltrasonido(void);
-void GuardarEEPROM(unsigned int direccion, unsigned char dato);
-unsigned char LeerEEPROM(unsigned int direccion);
+void Motor_Avance(void);
+void Motor_Reversa(void);
+void Motor_Paro(void);
 
+
+static inline void PWM_Set10bit(unsigned int duty10)
+{
+if(duty10 > 1023) duty10 = 1023;
+CCPR1L = (unsigned char)(duty10 >> 2);
+CCP1CONbits.DC1B1 = (duty10 >> 1) & 1;
+CCP1CONbits.DC1B0 = (duty10 >> 0) & 1;
+}
+
+static inline void PWM_SetPercent(unsigned char perc)
+{
+if(perc > 100) perc = 100;
+
+unsigned int val_reg = (unsigned int)((unsigned long)perc * 1023UL / 100UL);
+PWM_Set10bit(val_reg);
+}
 
 void main (void){
-
 
 ConfigVariables();
 editor=0;
@@ -6175,23 +6125,35 @@ datoSerial=0;
 
 OSCCON = 0b01000000;
 
-
 ADCON1=0b001110;
 
 
+TRISC2=0;
+PR2=249;
+CCPR1L = 125;
+T2CON=0b00000000;
+CCP1CON =0b00001100;
+TMR2=0;
+T2CONbits.TMR2ON=1;
+
+
+TRISA6 = 0;
+LATA6 = 0;
+modoReversa = 0;
 
 ADCON0=0b00000001;
 ADCON2=0b10001000;
 
-
+TRISC0=0;
+TRISC1=1;
+LATC0=0;
+T1CON=0b10010000;
 
 TRISE=0;
 LATE=0b00000111;
 
-
 TRISD=0;
 LATD=contador;
-
 
 TRISA1=0;
 LATA1=0;
@@ -6199,40 +6161,23 @@ LATA1=0;
 TRISA2=0;
 LATA2=0;
 
-
 TRISA3=0;
 LATA3=0;
 TRISA4=0;
 
 
-TRISC2=0;
-LATC2=0;
-
-
-TRISC0=0;
-LATC0=0;
-TRISC1=1;
-
-
 TRISC6=0;
 TRISC7=1;
-
 TXSTA=0b00100100;
 RCSTA = 0b10010000;
 BAUDCON=0b00001000;
+SPBRGH = 0;
 SPBRG=25;
-
 
 TRISC1=1;
 
-
 TRISA5=0;
 LATA5=1;
-
-ConfigurarPWM();
-ConfigurarCaptura();
-
-
 
 
 T0CON=0b00000001;
@@ -6242,11 +6187,7 @@ TMR0IE=1;
 TMR0ON=1;
 
 
-T1CON = 0b10110001;
-TMR1=3036;
-TMR1IF=0;
-TMR1IE=1;
-TMR1ON = 1;
+T1CON=0b10000000;
 
 
 TRISB=0b11110000;
@@ -6260,111 +6201,97 @@ PEIE=1;
 GIE=1;
 RCIE=1;
 
-
 LATA3=1;
-
+Bienvenida();
 
 if(POR==0){
+Inactividad=0;
 POR=1;
-conteo_recuperado = LeerEEPROM(0);
+valorGuardado = LeerContador();
+objetivoGuardado = LeerObjetivo();
 
-
-if(conteo_recuperado <= 59){
-Bienvenida();
 BorraLCD();
-MensajeLCD_Var("Recuperar conteo?");
+OcultarCursor();
+MensajeLCD_Var("    FALLA DE");
 DireccionaLCD(0xC0);
-MensajeLCD_Var("1:Si  2:No");
+MensajeLCD_Var("     ENERGIA");
+_delay((unsigned long)((2000)*(1000000/4000.0)));
+
+if(valorGuardado > 0 && valorGuardado <= 59 && objetivoGuardado > 0){
+Inactividad=0;
+BorraLCD();
+MensajeLCD_Var("Continuar desde");
+DireccionaLCD(0xC0);
+MensajeLCD_Var("   cuenta: ");
+EscribeLCD_n8(valorGuardado, 2);
+_delay((unsigned long)((5000)*(1000000/4000.0)));
+
+BorraLCD();
+MensajeLCD_Var("1=SI   2=NO");
+DireccionaLCD(0xC0);
+MensajeLCD_Var("Seleccione:");
 
 Tecla = '\0';
-while(Tecla != 1 && Tecla != 2);
+while(Tecla != 1 && Tecla != 2){}
 
 if(Tecla == 1){
+Supercontador = valorGuardado;
+Objetivo = objetivoGuardado;
 
-Supercontador = conteo_recuperado;
 contadorRGB = Supercontador / 10;
-contador = Supercontador % 10;
+contador = Supercontador - (contadorRGB * 10);
 
 LATD = contador;
 
-if(contadorRGB==0) LATE=0b00000010;
-else if(contadorRGB==1) LATE=0b00000011;
-else if(contadorRGB==2) LATE=0b00000001;
-else if(contadorRGB==3) LATE=0b00000101;
-else if(contadorRGB==4) LATE=0b00000100;
+if(contadorRGB==0) LATE=0b00000001;
+else if(contadorRGB==1) LATE=0b00000101;
+else if(contadorRGB==2) LATE=0b00000100;
+else if(contadorRGB==3) LATE=0b00000110;
+else if(contadorRGB==4) LATE=0b00000010;
 else if(contadorRGB==5) LATE=0b00000000;
-} else {
-Supercontador = 0;
-GuardarEEPROM(0, 0);
-}
-} else {
 
-Bienvenida();
-Supercontador = 0;
-GuardarEEPROM(0, 0);
-BorraLCD(); OcultarCursor();
-MensajeLCD_Var(" Cuenta reiniciada");
+BorraLCD();
+MensajeLCD_Var("Cuenta");
 DireccionaLCD(0xC0);
-MensajeLCD_Var(" (EEPROM no valida)");
-_delay((unsigned long)((2000)*(1000000/4000.0)));
+MensajeLCD_Var("restaurada");
+_delay((unsigned long)((1500)*(1000000/4000.0)));
+BorraLCD();
+
+goto inicio_conteo;
+
+} else {
+ConfigVariables();
+EEPROM_Write(0b00000000, 0b00000000);
+EEPROM_Write(0b00000001, 0b00000000);
+BorraLCD();
+MensajeLCD_Var("Cuenta");
+DireccionaLCD(0xC0);
+MensajeLCD_Var("reiniciada");
+}
 }
 
 }else{
-Bienvenida();
 BorraLCD();
 OcultarCursor();
 MensajeLCD_Var("    RESET DE");
 DireccionaLCD(0xC0);
 MensajeLCD_Var("     USUARIO");
 _delay((unsigned long)((1000)*(1000000/4000.0)));
+
+ConfigVariables();
+EEPROM_Write(0b00000000, 0b00000000);
+EEPROM_Write(0b00000001, 0b00000000);
 }
 
+_delay((unsigned long)((1000)*(1000000/4000.0)));
 LATA3=0;
 
 while(1){
+PreguntaAlUsuario();
 
+inicio_conteo:
 
-
-if(flag_timer0_event == 1){
-flag_timer0_event = 0;
-
-LATA1=LATA1^1;
-
-
-TriggerUltrasonido();
-
-
-if(control_manual_pwm == 0){
-valorADC=Conversion(0);
-CCPR1L = valorADC >> 2;
-DC1B1 = (valorADC & 2) >> 1;
-DC1B0 = valorADC & 1;
-pwm_duty_perc = (unsigned char)((valorADC * 100UL) / 1023UL);
-} else {
-unsigned int val_reg = (pwm_duty_perc * 1023UL) / 100UL;
-CCPR1L = val_reg >> 2;
-DC1B1 = (val_reg & 2) >> 1;
-DC1B0 = val_reg & 1;
-}
-
-
-flag_imprimir = 1;
-}
-
-
-if(flag_imprimir == 1){
-flag_imprimir = 0;
-
-
-printf("\r\nValor de PWM: %d %%", pwm_duty_perc);
-
-printf("\r\nDistancia objeto: %d cm", distancia);
-}
-
-if(Supercontador == 0) PreguntaAlUsuario();
 OcultarCursor();
-
-BorraLCD();
 MensajeLCD_Var("Faltantes: ");
 EscribeLCD_n8(Objetivo-Supercontador,2);
 DireccionaLCD(0xC0);
@@ -6373,42 +6300,11 @@ EscribeLCD_n8(Objetivo,2);
 salir=1;
 
 while (salir==1){
-
-
-
-if(flag_timer0_event == 1){
-flag_timer0_event = 0;
-LATA1=LATA1^1;
-TriggerUltrasonido();
-
-if(control_manual_pwm == 0){
-valorADC=Conversion(0);
-CCPR1L = valorADC >> 2;
-DC1B1 = (valorADC & 2) >> 1;
-DC1B0 = valorADC & 1;
-pwm_duty_perc = (unsigned char)((valorADC * 100UL) / 1023UL);
-} else {
-unsigned int val_reg = (pwm_duty_perc * 1023UL) / 100UL;
-CCPR1L = val_reg >> 2;
-DC1B1 = (val_reg & 2) >> 1;
-DC1B0 = val_reg & 1;
-}
-flag_imprimir = 1;
-}
-
-if(flag_imprimir == 1){
-flag_imprimir = 0;
-printf("\r\nValor de PWM: %d %%", pwm_duty_perc);
-printf("\r\nDistancia objeto: %d cm", distancia);
-}
-
+_delay((unsigned long)((100)*(1000000/4000.0)));
+d=MedirDistancia();
 
 if(Supercontador==Objetivo){
-
-LATA2=1;
-_delay((unsigned long)((1000)*(1000000/4000.0)));
-LATA2=0;
-
+LATA2=1; _delay((unsigned long)((1000)*(1000000/4000.0))); LATA2=0;
 
 BorraLCD();
 MensajeLCD_Var("Cuenta Cumplida");
@@ -6416,56 +6312,39 @@ DireccionaLCD(0xC0);
 MensajeLCD_Var("   Presione OK");
 
 salir = 0;
-
-GuardarEEPROM(0, 0);
-
 Tecla='\0';
 while(Tecla!= '*'){}
 ConfigVariables();
-
 }
 
-# 337
-if(distancia >= 5 && distancia <= 8){
+if((d>4 && d<9) && Supercontador!=Objetivo){
 Inactividad=0;
+Pulsado=0;
+}
+
 if(Pulsado==0){
+if((d<4 || d>9)){
 Pulsado=1;
 contador++;
 Supercontador++;
-
-GuardarEEPROM(0, (unsigned char)Supercontador);
+GuardarContador(Supercontador, Objetivo);
 
 if (contador==10){
-
-LATA2=1;
-_delay((unsigned long)((300)*(1000000/4000.0)));
-LATA2=0;
-
+LATA2=1; _delay((unsigned long)((300)*(1000000/4000.0))); LATA2=0;
 contador=0;
 contadorRGB++;
 if (contadorRGB==6){
-
-LATA2=1;
-_delay((unsigned long)((300)*(1000000/4000.0)));
-LATA2=0;
-
+LATA2=1; _delay((unsigned long)((300)*(1000000/4000.0))); LATA2=0;
 contadorRGB=0;
 }
 }
 
-if(contadorRGB==0){
-LATE=0b00000010;
-}else if(contadorRGB==1){
-LATE=0b00000011;
-}else if(contadorRGB==2){
-LATE=0b00000001;
-}else if(contadorRGB==3){
-LATE=0b00000101;
-}else if(contadorRGB==4){
-LATE=0b00000100;
-}else if(contadorRGB==5){
-LATE=0b00000000;
-}
+if(contadorRGB==0) LATE=0b00000010;
+else if(contadorRGB==1) LATE=0b00000011;
+else if(contadorRGB==2) LATE=0b00000001;
+else if(contadorRGB==3) LATE=0b00000101;
+else if(contadorRGB==4) LATE=0b00000100;
+else if(contadorRGB==5) LATE=0b00000000;
 
 DireccionaLCD(0x8B);
 EscribeLCD_n8(Objetivo-Supercontador,2);
@@ -6473,160 +6352,124 @@ EscribeLCD_n8(Objetivo-Supercontador,2);
 LATD=contador;
 _delay((unsigned long)((500)*(1000000/4000.0)));
 }
-} else {
-
-if(distancia > 10 || distancia < 3) {
-Pulsado = 0;
-}
 }
 }
 
-LATE=0b00000010;
+LATE=0b00000001;
 LATD=contador;
 }
-}
-
-void ConfigurarPWM(void){
-
-
-PR2 = 249;
-CCP1CON = 0b00001100;
-T2CON = 0b00000100;
-}
-
-void ConfigurarCaptura(void){
-
-T3CON = 0b10001001;
-CCP2CON = 0b00000101;
-CCP2IE = 1;
-CCP2IF = 0;
-}
-
-void TriggerUltrasonido(void){
-
-LATC0 = 1;
-_delay((unsigned long)((10)*(1000000/4000000.0)));
-LATC0 = 0;
-}
-
-
-void GuardarEEPROM(unsigned int direccion, unsigned char dato){
-EEADR = direccion;
-EEDATA = dato;
-EECON1 = 0b0010;
-GIE = 0;
-EECON2 = 0x55;
-EECON2 = 0xAA;
-EECON1bits.WR = 1;
-while(EECON1bits.WR);
-GIE = 1;
-EECON1bits.WREN = 0;
-}
-
-unsigned char LeerEEPROM(unsigned int direccion){
-EEADR = direccion;
-EECON1bits.EEPGD = 0;
-EECON1bits.CFGS = 0;
-EECON1bits.RD = 1;
-return EEDATA;
 }
 
 void __interrupt()ISR(void){
 
 if (RCIF==1){
+
+
+if(RCSTAbits.OERR){
+RCSTAbits.CREN = 0;
+RCSTAbits.CREN = 1;
+}
+
+Inactividad=0;
 datoSerial = RCREG;
 
 
-if(datoSerial == 'Z' || datoSerial == 'z'){ control_manual_pwm = 1; pwm_duty_perc = 0; }
-else if(datoSerial == 'X' || datoSerial == 'x'){ control_manual_pwm = 1; pwm_duty_perc = 20; }
-else if(datoSerial == 'C' || datoSerial == 'c'){ control_manual_pwm = 1; pwm_duty_perc = 40; }
-else if(datoSerial == 'V' || datoSerial == 'v'){ control_manual_pwm = 1; pwm_duty_perc = 60; }
-else if(datoSerial == 'B' || datoSerial == 'b'){ control_manual_pwm = 1; pwm_duty_perc = 80; }
-else if(datoSerial == 'N' || datoSerial == 'n'){ control_manual_pwm = 1; pwm_duty_perc = 100; }
-else if(datoSerial == 'M' || datoSerial == 'm'){ control_manual_pwm = 0; }
+if(datoSerial=='Z' || datoSerial=='z'){ control_manual_pwm = 1; pwm_duty_perc = 0; }
+else if(datoSerial=='X' || datoSerial=='x'){ control_manual_pwm = 1; pwm_duty_perc = 20; }
+else if(datoSerial=='C' || datoSerial=='c'){ control_manual_pwm = 1; pwm_duty_perc = 40; }
+else if(datoSerial=='V' || datoSerial=='v'){ control_manual_pwm = 1; pwm_duty_perc = 60; }
+else if(datoSerial=='B' || datoSerial=='b'){ control_manual_pwm = 1; pwm_duty_perc = 80; }
+else if(datoSerial=='N' || datoSerial=='n'){ control_manual_pwm = 1; pwm_duty_perc = 100; }
+else if(datoSerial=='M' || datoSerial=='m'){ control_manual_pwm = 0; }
 
+
+if(modoReversa==0){
+if(control_manual_pwm==1){
+PWM_SetPercent(pwm_duty_perc);
+}
+}else{
+PWM_Set10bit(0);
+}
 
 if(datoSerial==80 || datoSerial==112){
-LATE=0b00000110;
-
+LATE=0b00000011;
 BorraLCD();
 OcultarCursor();
 MensajeLCD_Var("   PARADA DE");
 DireccionaLCD(0xC0);
 MensajeLCD_Var("   EMERGENCIA");
-CCP1CON = 0;
 
+PWM_Set10bit(0);
+Motor_Paro();
 while(1){}
-}else if(salir==1 && (datoSerial==114 || datoSerial==82)){
+}
+else if(salir==1 && (datoSerial==114 || datoSerial==82)){
 contador=0;
 Supercontador = 0;
 contadorRGB = 0;
+GuardarContador(0, Objetivo);
 LATE=0b00000010;
 DireccionaLCD(0x8B);
 EscribeLCD_n8(Objetivo-Supercontador,2);
 LATD=contador;
-GuardarEEPROM(0,0);
 }
+else if(datoSerial=='F' || datoSerial=='f'){
+Motor_Avance();
 }
-
-
-if(CCP2IF){
-if(CCP2M0 == 1){
-
-TMR3H = 0;
-TMR3L = 0;
-CCP2CON = 0b00000100;
-} else {
-
-
-unsigned int captura_raw = ((unsigned int)CCPR2H << 8) | CCPR2L;
-
-
-unsigned long calculo_temp = (unsigned long)captura_raw * 4;
-distancia = (int)(calculo_temp / 58);
-
-CCP2CON = 0b00000101;
+else if(datoSerial=='G' || datoSerial=='g'){
+Motor_Reversa();
 }
-CCP2IF = 0;
 }
 
 if(TMR0IF==1){
+Inactividad++;
 TMR0=3036;
 TMR0IF=0;
+LATA1=LATA1^1;
+
+valorADC=Conversion(0);
+porcentajeADC= (unsigned char)((valorADC * 100UL) / 1023UL);
+
+printf("Valor del ADC:%d\r\n", valorADC);
 
 
-
-flag_timer0_event = 1;
+if(modoReversa==1){
+PWM_Set10bit(0);
+}else{
+if(control_manual_pwm==1){
+PWM_SetPercent(pwm_duty_perc);
+porcentajeADC = pwm_duty_perc;
+}else{
+PWM_Set10bit(valorADC);
+}
 }
 
-if (TMR1IF){
-TMR1 = 34286;
-TMR1IF = 0;
+printf("Valor de PWM: %d%%\r\n",porcentajeADC);
 
-Inactividad++;
+if (etimeout == 1) ctimeout++;
+else ctimeout = 0;
+if (ctimeout >= 2) etimeout = 0;
 
+if(d==0) printf("Falla en el sensor\r\n");
+else printf("La distancia medida es: %d cm\r\n",d);
 
 if(Inactividad == 10){
-
 LATA3 = 0;
 }
-
-
 if(Inactividad >= 20){
-CCP1CON = 0;
 asm(" sleep");
-
-
-ConfigurarPWM();
 Inactividad = 0;
 RBIF = 0;
 TMR1ON = 1;
 }
+
+valorADC2=valorADC;
 }
 
 if(RBIF==1){
 if(PORTB!=0b11110000){
 Inactividad = 0;
+
 LATB=0b11111110;
 if(RB4==0){
 Tecla=1;
@@ -6635,20 +6478,14 @@ ConfigPregunta();
 else if(RB5==0) {
 Tecla=2;
 ConfigPregunta();
-
 }
 else if(RB6==0){
 Tecla=3;
 ConfigPregunta();
-
 }
 else if(RB7==0){
 Tecla='*';
 }
-
-
-
-
 else{
 LATB=0b11111101;
 if(RB4==0){
@@ -6664,19 +6501,16 @@ Tecla=6;
 ConfigPregunta();
 }
 else if(RB7==0) {
-LATE=0b00000110;
-
+LATE=0b00000011;
 BorraLCD();
 OcultarCursor();
 MensajeLCD_Var("   PARADA DE");
 DireccionaLCD(0xC0);
 MensajeLCD_Var("   EMERGENCIA");
-CCP1CON = 0;
-
+PWM_Set10bit(0);
+Motor_Paro();
 while(1){}
 }
-
-
 else{
 LATB=0b11111011;
 if(RB4==0) {
@@ -6694,21 +6528,18 @@ ConfigPregunta();
 else if(RB7==0) {
 Borrar();
 }
-
-
-
 else{
 LATB=0b11110111;
 if(RB4==0){
 contador=0;
 Supercontador = 0;
 contadorRGB = 0;
+GuardarContador(0, Objetivo);
 LATE=0b00000010;
 if(salir==1){
 DireccionaLCD(0x8B);
 EscribeLCD_n8(Objetivo-Supercontador,2);
 LATD=contador;
-GuardarEEPROM(0,0);
 }
 }
 else if(RB5==0) {
@@ -6720,19 +6551,14 @@ Borrar();
 Supercontador=Objetivo;
 contadorRGB = Objetivo/10;
 contador = Objetivo-contadorRGB*10;
-if(contadorRGB==0){
-LATE=0b00000010;
-}else if(contadorRGB==1){
-LATE=0b00000011;
-}else if(contadorRGB==2){
-LATE=0b00000001;
-}else if(contadorRGB==3){
-LATE=0b00000101;
-}else if(contadorRGB==4){
-LATE=0b00000100;
-}else if(contadorRGB==5){
-LATE=0b00000000;
-}
+
+if(contadorRGB==0) LATE=0b00000001;
+else if(contadorRGB==1) LATE=0b00000101;
+else if(contadorRGB==2) LATE=0b00000100;
+else if(contadorRGB==3) LATE=0b00000110;
+else if(contadorRGB==4) LATE=0b00000010;
+else if(contadorRGB==5) LATE=0b00000000;
+
 LATD=contador;
 }
 else if(RB7==0) {
@@ -6742,14 +6568,18 @@ TMR1ON=1;
 }
 }
 }
+
 LATB=0b11110000;
 }
+
 _delay((unsigned long)((300)*(1000000/4000.0)));
 RBIF=0;
 }
 }
+
 void ConfigVariables(void){
 Pulsado=1;
+valorADC2=0;
 contador=0;
 salir=0;
 Supercontador=0;
@@ -6757,16 +6587,20 @@ contadorRGB=0;
 posicion=0;
 Objetivo=0;
 Tecla='\0';
-}
-void Bienvenida(void){
 
+modoReversa = 0;
+LATA6 = 0;
+
+control_manual_pwm = 0;
+pwm_duty_perc = 0;
+}
+
+void Bienvenida(void){
 ConfiguraLCD(4);
 InicializaLCD();
 OcultarCursor();
 
-
-CrearCaracter(Corazon, 0);
-
+CrearCaracter(Estrella, 0);
 
 EscribeLCD_c(0);
 EscribeLCD_c(0);
@@ -6775,21 +6609,18 @@ DireccionaLCD(0xC0);
 EscribeLCD_c(0);
 EscribeLCD_c(0);
 MensajeLCD_Var("    Usuario");
-_delay((unsigned long)((4200)*(1000000/4000.0)));
-
+_delay((unsigned long)((3200)*(1000000/4000.0)));
 
 for(int i = 0; i < 18; i++){
 DesplazaPantallaD();
 _delay((unsigned long)((100)*(1000000/4000.0)));
 }
-
-
 }
+
 void PreguntaAlUsuario(void){
 while(1){
 CrearCaracter(RayaAlPiso, 1);
 posicion=0;
-
 BorraLCD();
 MensajeLCD_Var("Piezas a contar:");
 DireccionaLCD(0xC7);
@@ -6799,14 +6630,12 @@ DireccionaLCD(0xC7);
 MostrarCursor();
 
 editor=1;
-while(Tecla!= '*'){
+while(Tecla!= '*'){}
 
-}
 if((Objetivo>59)||(Objetivo==0)){
 editor=0;
 Tecla='\0';
 Objetivo=0;
-
 BorraLCD();
 OcultarCursor();
 MensajeLCD_Var("     !Error!");
@@ -6817,7 +6646,6 @@ DireccionaLCD(0xC0);
 MensajeLCD_Var("Valor min: 01");
 _delay((unsigned long)((2000)*(1000000/4000.0)));
 BorraLCD();
-
 }else{
 editor=0;
 posicion='0';
@@ -6826,6 +6654,7 @@ break;
 }
 }
 }
+
 void ConfigPregunta(){
 if(posicion==0 && editor==1){
 EscribeLCD_n8(Tecla,1);
@@ -6837,6 +6666,7 @@ OcultarCursor();
 }
 posicion++;
 }
+
 void Borrar(){
 if(editor==1){
 MostrarCursor();
@@ -6848,6 +6678,7 @@ EscribeLCD_c(1);
 DireccionaLCD(0xC7);
 }
 }
+
 unsigned int Conversion(unsigned char canal){
 ADCON0=(canal<<2);
 ADON=1;
@@ -6855,7 +6686,94 @@ GO_DONE=1;
 while(GO_DONE==1);
 return ADRES;
 }
+
 void putch(char data){
 while(TRMT==0);
 TXREG=data;
+}
+
+unsigned char MedirDistancia(void){
+unsigned char aux=0;
+
+CCP2CON=0b00000100;
+TMR1=0;
+TMR1IF=0;
+CCP2IF=0;
+
+RC0=1;
+_delay((unsigned long)((10)*(1000000/4000000.0)));
+RC0=0;
+
+etimeout=1;
+while(RC1==0 && etimeout==1);
+if(etimeout==0){
+return 0;
+}
+
+TMR1ON=1;
+while(CCP2IF==0 && TMR1IF==0);
+TMR1ON=0;
+
+if(TMR1IF==1)
+aux=255;
+else{
+if(CCPR2>=3556)
+CCPR2=3556;
+aux=CCPR2/14;
+}
+
+return aux;
+}
+
+unsigned char EEPROM_Read(unsigned char address){
+EEADR = address;
+EEPGD = 0;
+CFGS = 0;
+RD = 1;
+return EEDATA;
+}
+
+void EEPROM_Write(unsigned char address, unsigned char data){
+EEADR = address;
+EEDATA = data;
+EEPGD = 0;
+CFGS = 0;
+WREN = 1;
+GIE = 0;
+EECON2 = 0b01010101;
+EECON2 = 0b10101010;
+WR = 1;
+GIE = 1;
+while(WR);
+WREN = 0;
+}
+
+void GuardarContador(unsigned int valor, unsigned int objetivo){
+EEPROM_Write(0b00000000, (unsigned char)(valor & 0xFF));
+EEPROM_Write(0b00000001, (unsigned char)(objetivo & 0xFF));
+}
+
+unsigned int LeerContador(void){
+return (unsigned int)EEPROM_Read(0b00000000);
+}
+
+unsigned int LeerObjetivo(void){
+return (unsigned int)EEPROM_Read(0b00000001);
+}
+
+void Motor_Avance(void){
+modoReversa = 0;
+LATA6 = 0;
+}
+
+void Motor_Reversa(void){
+modoReversa = 1;
+PWM_Set10bit(0);
+LATA6 = 1;
+}
+
+void Motor_Paro(void){
+modoReversa = 0;
+PWM_Set10bit(0);
+LATA6 = 0;
 }

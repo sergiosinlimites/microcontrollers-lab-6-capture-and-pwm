@@ -1,25 +1,24 @@
 #include <xc.h>
 #include <stdio.h>
-#define _XTAL_FREQ 1000000 //Definir la constante para el cálculo de retardos  
-#include "LibLCDXC8.h" //Incluir libreria propia
+#define _XTAL_FREQ 1000000
+#include "LibLCDXC8.h"
 
-#pragma config FOSC=INTOSCIO_EC // <-- CAMBIO libera RA6 como I/O (antes INTOSC_EC)
-#pragma config WDT=OFF //Desactivar el perro guardian
-#pragma config LVP=OFF //Programar el PIC
+#pragma config FOSC=INTOSCIO_EC
+#pragma config WDT=OFF
+#pragma config LVP=OFF
 
-#define TRIGGER RC0 //Declaración del pin para el Trigger 
-#define ECHO RC1    //Declaración del pin para el ECHO
+#define TRIGGER RC0
+#define ECHO    RC1
 
-//DECLARACIÓN DE VARIABLES 
-unsigned char Corazon[8] = {
-    0b01010,  //  * * 
+unsigned char Estrella[8] = {
+    0b00100,   
+    0b01110,  //  *** 
     0b11111,  // *****
-    0b11111,  // *****
+    0b01110,  //  *** 
     0b11111,  // *****
     0b01110,  //  *** 
     0b00100,  //   *  
-    0b00000,  //      
-    0b00000
+    0b00000   // vacío
 };
 
 unsigned char RayaAlPiso[]={
@@ -30,32 +29,35 @@ unsigned char RayaAlPiso[]={
     0b00000,
     0b00000,
     0b00000,
-    0b11111}; // Carácter nuevo
+    0b11111
+};
 
-unsigned int Supercontador; //Contador global de las piezas
-unsigned int contador; //Contador unidades (siete segmentos)
-unsigned int contadorRGB; //Contador decenas (led rgb)
-unsigned char posicion; // Posicion del número ingresado por el usuario (unidades o decenas)
-unsigned char editor; // Variable para habilitar la escritura en el lcd del usuario 
-unsigned int Objetivo; // Valor meta de las piezas a contar 
-unsigned char salir; // Variable para salir del ciclo de conteo
-unsigned char Tecla; // Tecla presionada en el teclado
-unsigned char Pulsado; //Variable para evitar conteo infinito
-unsigned char Inactividad; //Variable para inactividad
-unsigned int valorADC; // Variable que guarda el valor dado por el modulo ADC
-unsigned int valorADC2; // Variable que guarda el valor dado por el modulo ADC
+unsigned int Supercontador;
+unsigned int contador;
+unsigned int contadorRGB;
+unsigned char posicion;
+unsigned char editor;
+unsigned int Objetivo;
+unsigned char salir;
+unsigned char Tecla;
+unsigned char Pulsado;
+unsigned char Inactividad;
+unsigned int valorADC;
+unsigned int valorADC2;
 unsigned char datoSerial;
-unsigned char d; // Variable que guarda el valor de la distancia 
+unsigned char d;
 unsigned char etimeout=0,ctimeout=0;
 unsigned char porcentajeADC;
 unsigned int anchoPulso=0;
 unsigned int valorGuardado=0;
 unsigned int objetivoGuardado=0;
 
-// --- NUEVO: bandera para bloquear PWM en reversa ---
-unsigned char modoReversa = 0; //0=avance(PWM activo), 1=reversa(PWM forzado a 0, RA6=1)
+unsigned char modoReversa = 0;          // 0=avance, 1=reversa
 
-//DECLARACIÓN DE FUNCIONES 
+// --- PWM manual tipo ?código bueno? ---
+unsigned char control_manual_pwm = 0;   // 0=ADC, 1=manual por %
+unsigned char pwm_duty_perc = 0;        // 0..100
+
 void __interrupt()ISR(void);
 void ConfigVariables(void);
 void Bienvenida(void);
@@ -65,118 +67,127 @@ void Borrar(void);
 unsigned int Conversion(unsigned char);
 void putch(char);
 unsigned char MedirDistancia(void);
-unsigned char EEPROM_Read(unsigned char);          
-void EEPROM_Write(unsigned char, unsigned char);   
+unsigned char EEPROM_Read(unsigned char);
+void EEPROM_Write(unsigned char, unsigned char);
 void GuardarContador(unsigned int, unsigned int);
-unsigned int LeerObjetivo(void);                                 
+unsigned int LeerObjetivo(void);
 unsigned int LeerContador(void);
 
 void Motor_Avance(void);
 void Motor_Reversa(void);
 void Motor_Paro(void);
 
+// ====== NUEVO: setters PWM 10-bit (CCPR1L + DC1B1/DC1B0) ======
+static inline void PWM_Set10bit(unsigned int duty10)
+{
+    if(duty10 > 1023) duty10 = 1023;
+    CCPR1L = (unsigned char)(duty10 >> 2);
+    CCP1CONbits.DC1B1 = (duty10 >> 1) & 1;
+    CCP1CONbits.DC1B0 = (duty10 >> 0) & 1;
+}
+
+static inline void PWM_SetPercent(unsigned char perc)
+{
+    if(perc > 100) perc = 100;
+    // 0..100% -> 0..1023
+    unsigned int val_reg = (unsigned int)((unsigned long)perc * 1023UL / 100UL);
+    PWM_Set10bit(val_reg);
+}
+
 void main (void){
-    //CONFIGURACION DE LOS VALORES INICIALES DE LAS VARIABLES
+
     ConfigVariables();
     editor=0;
     datoSerial=0;
 
-    // CONFIGURACIÓN DE LOS PUERTOS
-    ADCON1=0b001110; //Quital las funciones analogas de los pines RA1-RA4, RB0-RB4 , RE0-RE2  
-                     // solo el pin A0 es analógico
+    OSCCON = 0b01000000;
 
-    //PWM: Se utiliza CCP1 (como está)
-    TRISC2=0; //pin de salida para correcto funcionamiento
-    PR2=249; //Frecuencia del pwm de 1 KHz      PR2=1ms*1M/1=250
-    CCPR1L = 125; //Valor del ancho de pulso (Tiempo en alto) CCPXL=(250+1)*50%=125.5
-    T2CON=0b0000000; //Valor de prescaler en 1 y se mantiene apagado 
-    CCP1CON =0b00001100; // Modo PWM 
-    TMR2=0;// Timer2 empieza en 0
-    TMR2ON=1; //Se prende el tmr2
+    ADCON1=0b001110;
 
-    // --- NUEVO: configuración reversa (RA6) ---
+    // PWM (CCP1 + Timer2)
+    TRISC2=0;
+    PR2=249;
+    CCPR1L = 125;
+    T2CON=0b00000000;
+    CCP1CON =0b00001100;
+    TMR2=0;
+    T2CONbits.TMR2ON=1;
+
+    // Reversa (RA6)
     TRISA6 = 0;
-    LATA6  = 0;   // por defecto 0
-    modoReversa  = 0;   // por defecto avance
+    LATA6  = 0;
+    modoReversa  = 0;
 
-    // CONFIGURACIÓN MÓDULO ADC
-    ADCON0=0b00000001; // Se selecciona el canal 0 y se enciende el módulo
-    ADCON2=0b10001000; // Se justifica hacia la derecha y se toma un preescaler de 2 
+    ADCON0=0b00000001;
+    ADCON2=0b10001000;
 
-    //SENSOR ULTRASONICO
-    TRISC0=0; //Se ajusta el pin de Trigger como salida
-    TRISC1=1; //Pin C1 es configurado como entrada digital
-    LATC0=0; // La salida del Pin C0 es 0
-    T1CON=0b10010000;   //Ajuste de timer1: prescaler 2 T_sobreflujo=0.06s?
+    TRISC0=0;
+    TRISC1=1;
+    LATC0=0;
+    T1CON=0b10010000;
 
-    // Pines para el RGB
-    TRISE=0; // Todos los pines del puerto E son salidas digitales
-    LATE=0b00000111; // Todos los pines de salida del puerto E en 0
+    TRISE=0;
+    LATE=0b00000111;
 
-    // Pines para el Siete segmentos
-    TRISD=0; // Todos los pines del puerto E son salidas digitales
-    LATD=contador; // El puerto es igual a el valor del contador 
+    TRISD=0;
+    LATD=contador;
 
-    // Pin del led de operación
-    TRISA1=0; // Pin A1 es configurado como salida digital
-    LATA1=0; // La salida del Pin A1 es 0
+    TRISA1=0;
+    LATA1=0;
 
-    TRISA2=0; // Pin A2 es configurado como salida digital para el Buzzer
-    LATA2=0; // La salida del Pin A2 es 0
+    TRISA2=0;
+    LATA2=0;
 
-    // Pines para el uso de la lcd
-    TRISA3=0; //RS
+    TRISA3=0;
     LATA3=0;
-    TRISA4=0; //E
+    TRISA4=0;
 
-    //Pines transmisión serial
-    TRISC6=0; //Tx
-    TRISC7=1; //Rx
-    TXSTA=0b00100100;//Configurar la transimision / modo asincronico-8 bits/
-    RCSTA = 0b10010000; // Serial Port Enable 
-    BAUDCON=0b00001000;//Velocidad de transimsion 9600
-    SPBRG=25;//Ajustar baude rate
+    // UART
+    TRISC6=0;
+    TRISC7=1;
+    TXSTA=0b00100100;
+    RCSTA = 0b10010000;
+    BAUDCON=0b00001000;
+    SPBRGH = 0;               // ====== NUEVO: por BRG16 ======
+    SPBRG=25;
 
-    //Pin del pulsador de conteo
-    TRISC1=1; //Pin C1 es configurado como entrada digital
+    TRISC1=1;
 
-    // Pin prender apagar backlight LCD
-    TRISA5=0; 
-    LATA5=1;  
+    TRISA5=0;
+    LATA5=1;
 
-    // CONFIGURACIÓN DE LAS INTERRUPCIONES //
-    T0CON=0b00000001; // timer0 modo 16 bits - prescale 4
-    TMR0=3036; 
-    TMR0IF=0; 
-    TMR0IE=1; 
+    // Timer0
+    T0CON=0b00000001;
+    TMR0=3036;
+    TMR0IF=0;
+    TMR0IE=1;
     TMR0ON=1;
 
-    // Configuración de la interrupción del TIMER1  
-    T1CON=0b10000000;   //prescaler 1
+    // Timer1 (ultrasonido)
+    T1CON=0b10000000;
 
-    //Configuración iterrupción teclado (pueto B)
-    TRISB=0b11110000; 
+    // Teclado
+    TRISB=0b11110000;
     LATB=0b00000000;
-    RBPU=0; 
-    __delay_ms(100); 
-    RBIF=0; 
+    RBPU=0;
+    __delay_ms(100);
+    RBIF=0;
     RBIE=1;
 
-    PEIE=1; 
-    GIE=1;  
+    PEIE=1;
+    GIE=1;
     RCIE=1;
 
-    //////////////////////////////////////////////////////////////////////////
     LATA3=1;
-    Bienvenida(); 
+    Bienvenida();
 
-    //Detectar fuente de Reset POR
     if(POR==0){
         Inactividad=0;
         POR=1;
         valorGuardado = LeerContador();
         objetivoGuardado = LeerObjetivo();
-        BorraLCD(); 
+
+        BorraLCD();
         OcultarCursor();
         MensajeLCD_Var("    FALLA DE");
         DireccionaLCD(0xC0);
@@ -198,20 +209,22 @@ void main (void){
             MensajeLCD_Var("Seleccione:");
 
             Tecla = '\0';
-            while(Tecla != 1 && Tecla != 2){} 
+            while(Tecla != 1 && Tecla != 2){}
 
             if(Tecla == 1){
                 Supercontador = valorGuardado;
                 Objetivo = objetivoGuardado;
+
                 contadorRGB = Supercontador / 10;
                 contador = Supercontador - (contadorRGB * 10);
 
                 LATD = contador;
-                if(contadorRGB==0)      LATE=0b00000010;
-                else if(contadorRGB==1) LATE=0b00000011;
-                else if(contadorRGB==2) LATE=0b00000001;
-                else if(contadorRGB==3) LATE=0b00000101;
-                else if(contadorRGB==4) LATE=0b00000100;
+
+                if(contadorRGB==0)      LATE=0b00000001;
+                else if(contadorRGB==1) LATE=0b00000101;
+                else if(contadorRGB==2) LATE=0b00000100;
+                else if(contadorRGB==3) LATE=0b00000110;
+                else if(contadorRGB==4) LATE=0b00000010;
                 else if(contadorRGB==5) LATE=0b00000000;
 
                 BorraLCD();
@@ -235,12 +248,13 @@ void main (void){
         }
 
     }else{
-        BorraLCD(); 
+        BorraLCD();
         OcultarCursor();
         MensajeLCD_Var("    RESET DE");
         DireccionaLCD(0xC0);
         MensajeLCD_Var("     USUARIO");
         __delay_ms(1000);
+
         ConfigVariables();
         EEPROM_Write(0b00000000, 0b00000000);
         EEPROM_Write(0b00000001, 0b00000000);
@@ -251,18 +265,19 @@ void main (void){
 
     while(1){
         PreguntaAlUsuario();
+
         inicio_conteo:
 
         OcultarCursor();
         MensajeLCD_Var("Faltantes: ");
         EscribeLCD_n8(Objetivo-Supercontador,2);
-        DireccionaLCD(0xC0);    
+        DireccionaLCD(0xC0);
         MensajeLCD_Var("Objetivo: ");
         EscribeLCD_n8(Objetivo,2);
         salir=1;
 
         while (salir==1){
-            __delay_ms(100); 
+            __delay_ms(100);
             d=MedirDistancia();
 
             if(Supercontador==Objetivo){
@@ -275,13 +290,13 @@ void main (void){
 
                 salir = 0;
                 Tecla='\0';
-                while(Tecla!= '*'){} 
+                while(Tecla!= '*'){}
                 ConfigVariables();
             }
 
             if((d>4 && d<9) && Supercontador!=Objetivo){
                 Inactividad=0;
-                Pulsado=0;  
+                Pulsado=0;
             }
 
             if(Pulsado==0){
@@ -317,7 +332,7 @@ void main (void){
             }
         }
 
-        LATE=0b00000010;
+        LATE=0b00000001;
         LATD=contador;
     }
 }
@@ -325,36 +340,58 @@ void main (void){
 void __interrupt()ISR(void){
 
     if (RCIF==1){
-        Inactividad=0;
-        datoSerial = RCREG; 
 
-        if(datoSerial==80 || datoSerial==112){ // P/p
-            LATE=0b00000110;
-            BorraLCD(); 
+        if(RCSTAbits.OERR){
+            RCSTAbits.CREN = 0;
+            RCSTAbits.CREN = 1;
+        }
+
+        Inactividad=0;
+        datoSerial = RCREG;
+
+        // ---- PWM manual por serial (LATCH) ----
+        if(datoSerial=='Z' || datoSerial=='z'){ control_manual_pwm = 1; pwm_duty_perc = 0;   }
+        else if(datoSerial=='X' || datoSerial=='x'){ control_manual_pwm = 1; pwm_duty_perc = 20; }
+        else if(datoSerial=='C' || datoSerial=='c'){ control_manual_pwm = 1; pwm_duty_perc = 40; }
+        else if(datoSerial=='V' || datoSerial=='v'){ control_manual_pwm = 1; pwm_duty_perc = 60; }
+        else if(datoSerial=='B' || datoSerial=='b'){ control_manual_pwm = 1; pwm_duty_perc = 80; }
+        else if(datoSerial=='N' || datoSerial=='n'){ control_manual_pwm = 1; pwm_duty_perc = 100; }
+        else if(datoSerial=='M' || datoSerial=='m'){ control_manual_pwm = 0; }
+
+        if(modoReversa==0){
+            if(control_manual_pwm==1){
+                PWM_SetPercent(pwm_duty_perc);
+            }
+        }else{
+            PWM_Set10bit(0);
+        }
+
+        if(datoSerial==80 || datoSerial==112){
+            LATE=0b00000011;
+            BorraLCD();
             OcultarCursor();
             MensajeLCD_Var("   PARADA DE");
             DireccionaLCD(0xC0);
             MensajeLCD_Var("   EMERGENCIA");
 
-            CCPR1L=0;
-            Motor_Paro();     // <-- NUEVO: asegura RA6=0 y PWM=0
+            PWM_Set10bit(0);
+            Motor_Paro();
             while(1){}
         }
-        else if(salir==1 && (datoSerial==114 || datoSerial==82)){ // r/R
+        else if(salir==1 && (datoSerial==114 || datoSerial==82)){
             contador=0;
             Supercontador = 0;
             contadorRGB = 0;
             GuardarContador(0, Objetivo);
-            LATE=0b00000010; 
+            LATE=0b00000010;
             DireccionaLCD(0x8B);
             EscribeLCD_n8(Objetivo-Supercontador,2);
             LATD=contador;
         }
-        // --- NUEVO: control sentido por serial ---
-        else if(datoSerial=='F' || datoSerial=='f'){ // Avance
+        else if(datoSerial=='F' || datoSerial=='f'){
             Motor_Avance();
         }
-        else if(datoSerial=='G' || datoSerial=='g'){ // Reversa
+        else if(datoSerial=='G' || datoSerial=='g'){
             Motor_Reversa();
         }
     }
@@ -366,50 +403,26 @@ void __interrupt()ISR(void){
         LATA1=LATA1^1;
 
         valorADC=Conversion(0);
-        porcentajeADC=100*valorADC/1023;
-
-        if(valorADC>valorADC2+3 && valorADC<valorADC2-3){
-            Inactividad=0;
-        }
+        porcentajeADC= (unsigned char)((valorADC * 100UL) / 1023UL);
 
         printf("Valor del ADC:%d\r\n", valorADC);
 
-        if(valorADC>664)
-            porcentajeADC=porcentajeADC+65;
-
-        if(datoSerial==90 || datoSerial==122){
-            CCPR1L = 0;
-            porcentajeADC=0;
-        }else if(datoSerial==88 || datoSerial==120){
-            CCPR1L = 50;
-            porcentajeADC=20;
-        }else if(datoSerial==67 || datoSerial==99){
-            CCPR1L = 100;
-            porcentajeADC=40;
-        }else if(datoSerial==86 || datoSerial==118){
-            CCPR1L = 150;
-            porcentajeADC=60;
-        }else if(datoSerial==66 || datoSerial==98){
-            CCPR1L = 200;
-            porcentajeADC=80;
-        }else if(datoSerial==78 || datoSerial==110){
-            CCPR1L = 250;
-            porcentajeADC=100;
-        }
-        else{
-            CCPR1L = porcentajeADC*250/100;
-        }
-
-        // --- NUEVO: si está en reversa, FORZAR PWM a 0 ---
+        // ====== PWM (igual al que te funcionaba: 10 bits) ======
         if(modoReversa==1){
-            CCPR1L = 0;
+            PWM_Set10bit(0);
+        }else{
+            if(control_manual_pwm==1){
+                PWM_SetPercent(pwm_duty_perc);
+                porcentajeADC = pwm_duty_perc;
+            }else{
+                PWM_Set10bit(valorADC);   // 0..1023 directo al PWM
+            }
         }
 
         printf("Valor de PWM: %d%%\r\n",porcentajeADC);
 
         if (etimeout == 1) ctimeout++;
         else ctimeout = 0;
-
         if (ctimeout >= 2) etimeout = 0;
 
         if(d==0) printf("Falla en el sensor\r\n");
@@ -418,35 +431,35 @@ void __interrupt()ISR(void){
         if(Inactividad == 10){
             LATA3 = 0;
         }
-
         if(Inactividad >= 20){
             Sleep();
             Inactividad = 0;
             RBIF = 0;
             TMR1ON = 1;
         }
+
         valorADC2=valorADC;
     }
 
-    // --- TECLADO: (igual que tu código, SIN cambios) ---
     if(RBIF==1){
-        if(PORTB!=0b11110000){   
+        if(PORTB!=0b11110000){
             Inactividad = 0;
+
             LATB=0b11111110;
             if(RB4==0){
-                Tecla=1; 
+                Tecla=1;
                 ConfigPregunta();
-            }            
+            }
             else if(RB5==0) {
-                Tecla=2; 
+                Tecla=2;
                 ConfigPregunta();
             }
             else if(RB6==0){
-                Tecla=3; 
+                Tecla=3;
                 ConfigPregunta();
             }
             else if(RB7==0){
-                Tecla='*'; 
+                Tecla='*';
             }
             else{
                 LATB=0b11111101;
@@ -455,51 +468,49 @@ void __interrupt()ISR(void){
                     ConfigPregunta();
                 }
                 else if(RB5==0) {
-                    Tecla=5; 
+                    Tecla=5;
                     ConfigPregunta();
                 }
                 else if(RB6==0) {
-                    Tecla=6; 
+                    Tecla=6;
                     ConfigPregunta();
                 }
                 else if(RB7==0) {
                     LATE=0b00000011;
-                    BorraLCD(); 
+                    BorraLCD();
                     OcultarCursor();
                     MensajeLCD_Var("   PARADA DE");
                     DireccionaLCD(0xC0);
                     MensajeLCD_Var("   EMERGENCIA");
-                    CCPR1L=0;
-                    Motor_Paro(); // <-- NUEVO: RA6=0 y PWM=0
+                    PWM_Set10bit(0);
+                    Motor_Paro();
                     while(1){}
-                }   
-
+                }
                 else{
                     LATB=0b11111011;
                     if(RB4==0) {
-                        Tecla=7; 
+                        Tecla=7;
                         ConfigPregunta();
                     }
                     else if(RB5==0) {
-                        Tecla=8; 
+                        Tecla=8;
                         ConfigPregunta();
                     }
                     else if(RB6==0) {
-                        Tecla=9; 
+                        Tecla=9;
                         ConfigPregunta();
-                    } 
+                    }
                     else if(RB7==0) {
                         Borrar();
                     }
-
                     else{
                         LATB=0b11110111;
-                        if(RB4==0){             
+                        if(RB4==0){
                             contador=0;
                             Supercontador = 0;
                             contadorRGB = 0;
-                            GuardarContador(0, Objetivo); 
-                            LATE=0b00000010; 
+                            GuardarContador(0, Objetivo);
+                            LATE=0b00000010;
                             if(salir==1){
                                 DireccionaLCD(0x8B);
                                 EscribeLCD_n8(Objetivo-Supercontador,2);
@@ -507,7 +518,7 @@ void __interrupt()ISR(void){
                             }
                         }
                         else if(RB5==0) {
-                            Tecla=0; 
+                            Tecla=0;
                             ConfigPregunta();
                         }
                         else if(RB6==0) {
@@ -515,12 +526,14 @@ void __interrupt()ISR(void){
                             Supercontador=Objetivo;
                             contadorRGB = Objetivo/10;
                             contador = Objetivo-contadorRGB*10;
-                            if(contadorRGB==0)      LATE=0b00000010;
-                            else if(contadorRGB==1) LATE=0b00000011;
-                            else if(contadorRGB==2) LATE=0b00000001;
-                            else if(contadorRGB==3) LATE=0b00000101;
-                            else if(contadorRGB==4) LATE=0b00000100;
+
+                            if(contadorRGB==0)      LATE=0b00000001;
+                            else if(contadorRGB==1) LATE=0b00000101;
+                            else if(contadorRGB==2) LATE=0b00000100;
+                            else if(contadorRGB==3) LATE=0b00000110;
+                            else if(contadorRGB==4) LATE=0b00000010;
                             else if(contadorRGB==5) LATE=0b00000000;
+
                             LATD=contador;
                         }
                         else if(RB7==0) {
@@ -530,8 +543,10 @@ void __interrupt()ISR(void){
                     }
                 }
             }
+
             LATB=0b11110000;
         }
+
         __delay_ms(300);
         RBIF=0;
     }
@@ -540,7 +555,7 @@ void __interrupt()ISR(void){
 void ConfigVariables(void){
     Pulsado=1;
     valorADC2=0;
-    contador=0; 
+    contador=0;
     salir=0;
     Supercontador=0;
     contadorRGB=0;
@@ -548,9 +563,11 @@ void ConfigVariables(void){
     Objetivo=0;
     Tecla='\0';
 
-    // --- NUEVO: defaults motor ---
     modoReversa = 0;
     LATA6 = 0;
+
+    control_manual_pwm = 0;
+    pwm_duty_perc = 0;
 }
 
 void Bienvenida(void){
@@ -558,7 +575,7 @@ void Bienvenida(void){
     InicializaLCD();
     OcultarCursor();
 
-    CrearCaracter(Corazon, 0);
+    CrearCaracter(Estrella, 0);
 
     EscribeLCD_c(0);
     EscribeLCD_c(0);
@@ -589,6 +606,7 @@ void PreguntaAlUsuario(void){
 
         editor=1;
         while(Tecla!= '*'){}
+
         if((Objetivo>59)||(Objetivo==0)){
             editor=0;
             Tecla='\0';
@@ -600,7 +618,7 @@ void PreguntaAlUsuario(void){
             BorraLCD();
             MensajeLCD_Var("Valor max: 59");
             DireccionaLCD(0xC0);
-            MensajeLCD_Var("Valor min: 01");     
+            MensajeLCD_Var("Valor min: 01");
             __delay_ms(2000);
             BorraLCD();
         }else{
@@ -621,7 +639,7 @@ void ConfigPregunta(){
         Objetivo=Objetivo*10+Tecla;
         OcultarCursor();
     }
-    posicion++; 
+    posicion++;
 }
 
 void Borrar(){
@@ -636,7 +654,7 @@ void Borrar(){
     }
 }
 
-unsigned int Conversion(unsigned char canal){ 
+unsigned int Conversion(unsigned char canal){
     ADCON0=(canal<<2);
     ADON=1;
     GO_DONE=1;
@@ -651,28 +669,34 @@ void putch(char data){
 
 unsigned char MedirDistancia(void){
   unsigned char aux=0;
+
   CCP2CON=0b00000100;
   TMR1=0;
   TMR1IF=0;
   CCP2IF=0;
+
   TRIGGER=1;
   __delay_us(10);
   TRIGGER=0;
+
   etimeout=1;
   while(ECHO==0  && etimeout==1);
   if(etimeout==0){
     return 0;
-  }   
+  }
+
   TMR1ON=1;
   while(CCP2IF==0 && TMR1IF==0);
   TMR1ON=0;
+
   if(TMR1IF==1)
     aux=255;
-  else{  
+  else{
    if(CCPR2>=3556)
       CCPR2=3556;
     aux=CCPR2/14;
   }
+
   return aux;
 }
 
@@ -700,8 +724,8 @@ void EEPROM_Write(unsigned char address, unsigned char data){
 }
 
 void GuardarContador(unsigned int valor, unsigned int objetivo){
-    EEPROM_Write(0b00000000, (unsigned char)(valor & 0b11111111));    
-    EEPROM_Write(0b00000001, (unsigned char)(objetivo & 0b11111111));  
+    EEPROM_Write(0b00000000, (unsigned char)(valor & 0xFF));
+    EEPROM_Write(0b00000001, (unsigned char)(objetivo & 0xFF));
 }
 
 unsigned int LeerContador(void){
@@ -712,23 +736,19 @@ unsigned int LeerObjetivo(void){
     return (unsigned int)EEPROM_Read(0b00000001);
 }
 
-// =====================
-// NUEVO: Funciones motor
-// =====================
 void Motor_Avance(void){
     modoReversa = 0;
-    LATA6 = 0;   // reversa apagada
-    // PWM queda controlado por Timer0 como siempre
+    LATA6 = 0;
 }
 
 void Motor_Reversa(void){
     modoReversa = 1;
-    CCPR1L = 0; // PWM a 0
-    LATA6 = 1;  // reversa en 1 (L298)
+    PWM_Set10bit(0);
+    LATA6 = 1;
 }
 
 void Motor_Paro(void){
     modoReversa = 0;
-    CCPR1L = 0; // PWM a 0
-    LATA6 = 0;  // reversa apagada
+    PWM_Set10bit(0);
+    LATA6 = 0;
 }
